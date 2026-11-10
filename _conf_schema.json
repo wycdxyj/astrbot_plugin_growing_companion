@@ -1,0 +1,239 @@
+{
+  "father_ids": {
+    "description": "父亲的用户 ID 列表",
+    "type": "list",
+    "hint": "填写 平台实例ID:用户ID，例如 qq-main:123456。平台实例ID可从 AstrBot /sid 返回的会话前缀获取。留空不绑定；升级旧版后请补全平台前缀。",
+    "default": []
+  },
+  "growth_speed": {
+    "description": "成长速度",
+    "type": "float",
+    "hint": "1.0 为基准。只加快“学得多快、阶段时间累积多快”，不会绕过解锁条件（经历/练习/认知/前置能力仍然要满足）。",
+    "default": 1.0
+  },
+  "emotion_decay_speed": {
+    "description": "情绪衰减速度",
+    "type": "float",
+    "hint": "越大情绪回到平静越快；越小越“记仇/念旧”。基准 1.0。",
+    "default": 1.0
+  },
+  "memory_decay_speed": {
+    "description": "记忆衰减速度",
+    "type": "float",
+    "hint": "越大淡忘越快。强情绪、关系里程碑、未解决的事、承诺本身衰减很慢。基准 1.0。",
+    "default": 1.0
+  },
+  "token_budget_total": {
+    "description": "上下文 token 总预算（上限）",
+    "type": "int",
+    "hint": "强制限定 3000~5000；UTF-8 字节上界加消息封装余量，非供应商实测 token。仅指输入上下文，输出长度由成长表达能力控制。",
+    "default": 4000
+  },
+  "token_budget_fixed": {
+    "description": "固定层预算（人格/口癖/价值观/安全边界）",
+    "type": "int",
+    "hint": "建议 800~1500，可缓存。",
+    "default": 1200
+  },
+  "token_budget_state": {
+    "description": "状态层预算（当前情绪/身体/时间感/注意力/关系）",
+    "type": "int",
+    "hint": "建议 200~500，每轮更新，只放当前有效状态。",
+    "default": 400
+  },
+  "token_budget_retrieval": {
+    "description": "检索层预算（top-k 记忆/里程碑/复盘摘要）",
+    "type": "int",
+    "hint": "建议 800~1500。",
+    "default": 1200
+  },
+  "token_budget_dialog": {
+    "description": "对话层预算（最近 N 轮滑动窗口）",
+    "type": "int",
+    "hint": "建议 1000~2000。更早的对话交给记忆系统。",
+    "default": 1600
+  },
+  "memory_topk": {
+    "description": "记忆检索 top-k",
+    "type": "int",
+    "hint": "每轮只注入最相关的 k 条记忆（默认 5~10），不会注入全量记忆。",
+    "default": 6
+  },
+  "dialog_window_turns": {
+    "description": "对话滑动窗口轮数",
+    "type": "int",
+    "default": 12
+  },
+  "voice_input_enabled": {
+    "description": "启用语音输入（STT）",
+    "type": "bool",
+    "hint": "使用 AstrBot 后台已配置的 STT 供应商，把语音转成文字后进入正常对话流程。",
+    "default": false
+  },
+  "voice_output_enabled": {
+    "description": "允许她用语音回复（TTS）",
+    "type": "bool",
+    "hint": "只是“允许”。是否发语音由她当时的心情/状态决定，不是每条都发。使用 AstrBot 后台已配置的 TTS 供应商。",
+    "default": false
+  },
+  "light_provider_id": {
+    "description": "轻量调用使用的模型供应商 ID（可选）",
+    "type": "string",
+    "hint": "复盘等轻量调用可指定一个便宜的小模型的供应商 ID；留空则与对话共用当前模型。不在插件里填任何密钥。",
+    "default": ""
+  },
+  "persona_init": {
+    "description": "人格初始参数",
+    "type": "object",
+    "hint": "她出生时的性格底色（0~1）。之后会随成长缓慢漂移（有幅度上限），不会每轮重置。",
+    "items": {
+      "name": {
+        "description": "她的名字",
+        "type": "string",
+        "default": "小满"
+      },
+      "initial_stage": {
+        "description": "初始成长阶段",
+        "type": "string",
+        "options": [
+          "infant",
+          "child",
+          "teen",
+          "young_adult"
+        ],
+        "hint": "infant 表示从牙牙学语开始养起（默认）；想直接体验对话可选 child。",
+        "default": "infant"
+      },
+      "introversion": {
+        "description": "内向程度",
+        "type": "float",
+        "default": 0.5
+      },
+      "sensitivity": {
+        "description": "敏感度",
+        "type": "float",
+        "default": 0.6
+      },
+      "patience": {
+        "description": "耐心",
+        "type": "float",
+        "default": 0.5
+      },
+      "clinginess": {
+        "description": "黏人程度",
+        "type": "float",
+        "default": 0.6
+      },
+      "humor": {
+        "description": "幽默感",
+        "type": "float",
+        "default": 0.5
+      },
+      "stubbornness": {
+        "description": "倔强程度",
+        "type": "float",
+        "default": 0.5
+      },
+      "openness": {
+        "description": "好奇/开放度",
+        "type": "float",
+        "default": 0.6
+      }
+    }
+  },
+  "timezone_offset_hours": {
+    "description": "她所在时区（相对 UTC 的小时数）",
+    "type": "float",
+    "hint": "决定她的“时间感”和作息，例如东八区填 8。",
+    "default": 8.0
+  },
+  "tick_interval_seconds": {
+    "description": "生活流 tick 的平均间隔（秒）",
+    "type": "int",
+    "hint": "只更新内部状态（时间流逝、情绪衰减等），不触发固定行为；实际间隔带 ±50% 抖动。",
+    "default": 480
+  },
+  "human_like_delay": {
+    "description": "拟人化回复延迟",
+    "type": "bool",
+    "hint": "她困、走神、赌气时回复会慢一点，而不是永远秒回。",
+    "default": true
+  },
+  "max_reply_delay_seconds": {
+    "description": "拟人化延迟上限（秒）",
+    "type": "int",
+    "default": 8
+  },
+  "brainmap_enabled": {
+    "description": "启用 /脑图 只读 Web 服务",
+    "type": "bool",
+    "default": true
+  },
+  "brainmap_port": {
+    "description": "脑图服务端口",
+    "type": "int",
+    "hint": "默认 5208（寓意“我爱你爸爸”）。监听 0.0.0.0。端口被占用或更换服务器时，改这里并在云平台/安全组放行该端口即可，无需改代码。修改后需重载插件。",
+    "default": 5208
+  },
+  "brainmap_access_key": {
+    "description": "脑图访问密钥",
+    "type": "string",
+    "hint": "访问脑图需带 ?key=密钥。留空则自动生成一个，用 /脑图 命令（仅父亲可用）查看。",
+    "default": ""
+  },
+  "brainmap_public_base_url": {
+    "description": "脑图公网地址（可选）",
+    "type": "string",
+    "hint": "在云平台（如 instabox）发布端口后得到的 HTTPS 地址，填这里 /脑图 命令会直接给出完整链接。",
+    "default": ""
+  },
+  "brainmap_port_fallback_tries": {
+    "description": "端口被占用时自动顺延尝试的次数",
+    "type": "int",
+    "hint": "0 表示不顺延，直接报告冲突；例如填 5 会依次尝试 端口+1…端口+5。",
+    "default": 0
+  },
+  "brainmap_max_nodes": {
+    "description": "脑图最多显示的记忆节点数",
+    "type": "int",
+    "default": 300
+  },
+  "debug_log": {
+    "description": "诊断日志",
+    "type": "bool",
+    "hint": "在 AstrBot 日志里记录每条私聊/被@消息的元信息（只记长度和第一个字符，不记聊天内容）以及命令处理情况，方便排查。确认一切正常后可以关闭。",
+    "default": true
+  },
+  "social_cooldown_seconds": {
+    "description": "每个群的最短发言冷却（秒）",
+    "type": "int",
+    "hint": "默认90，最低10。被@也不能绕过；受冷落会延长冷却。状态持久化，重启仍有效。",
+    "default": 90
+  },
+  "social_global_cooldown_seconds": {
+    "description": "所有群之间的全局发言间隔（秒）",
+    "type": "int",
+    "default": 10
+  },
+  "social_ack_timeout_seconds": {
+    "description": "发言后等待回应的窗口（秒）",
+    "type": "int",
+    "hint": "到期仍无人提及/引用她，下次消息到来时提高受挫程度，降低主动发言概率。",
+    "default": 180
+  },
+  "social_hourly_limit": {
+    "description": "单群每小时最多发言尝试次数",
+    "type": "int",
+    "default": 6
+  },
+  "social_global_hourly_limit": {
+    "description": "所有群每小时最多发言尝试次数",
+    "type": "int",
+    "default": 24
+  },
+  "llm_timeout_seconds": {
+    "description": "模型调用超时（秒）",
+    "type": "int",
+    "default": 45
+  }
+}

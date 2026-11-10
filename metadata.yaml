@@ -1,0 +1,11 @@
+name: growing_companion
+display_name: 拟人化成长陪伴 · 第三版
+desc: 连续人格、分层记忆、渐进成长、群聊观察学习与有边界的主动社交。
+help: |
+  配置 father_ids 为“平台实例ID:用户ID”；留空不会自动绑定父亲。
+  父亲私聊只读命令：/她状态 /记忆列表 /记忆详情 N /成长报告 /关系状态 /最近复盘 /脑图。
+  群聊默认旁听，有兴趣时冒泡；所有群聊发言受持久化冷却和小时上限约束。
+version: 0.3.0
+author: Companion Contributors
+repo: ""
+astrbot_version: ">=4.29.4,<5"
