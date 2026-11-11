@@ -1,18 +1,29 @@
-# 拟人化成长陪伴 · 第三版 v0.3.0
+# 拟人化成长陪伴 · 4.0
 
-基于原 v0.1.3 升级的 AstrBot 插件：连续人格、分层记忆、情绪惯性、渐进成长、自主复盘、群聊旁听与有冷却限制的主动冒泡。
+基于 v0.3.0 的行为升级：意图判断 → 表达规划 → 表达节制，支持沉默、短回、分条、延迟与人格一致性校验。保留分层记忆、情绪惯性、渐进成长、自主复盘、群聊旁听和 3D 脑图。
 
-完整架构、实际配置、完整 SQL、逐文件源码、测试与路线图见 [九部分交付文档](DELIVERY_V3.md)。
+按五部分顺序排列的增量说明、逐文件代码、SQL 和测试见 [4.0 交付文档](DELIVERY_V4.md)。
+低配置服务器的声音克隆与发声见 [云端语音使用说明](docs/CLOUD_VOICE.md) 和 [可运行示例](examples/cloud_voice_demo.py)。
+历史架构保存在 [第三版文档](DELIVERY_V3.md)，升级以当前源码为准。
 
 ## 安装
 
 1. 本版核对 AstrBot **v4.29.4**；最新宿主要求 **Python ≥3.12**。插件本身保持 Python 3.10 语法兼容。
-2. 解压目录至 `data/plugins/growing_companion/`，使 `main.py` 直接位于该目录；依赖见 `requirements.txt`（aiohttp）。
-3. 在 AstrBot 配置聊天模型。插件不单独保存 API Key。
+2. 解压目录至 `data/plugins/growing_companion/`，使 `main.py` 直接位于该目录；依赖见 `requirements.txt`（aiohttp、edge-tts）。
+3. 在 AstrBot 配置聊天模型。Fish 语音密钥从 AstrBot 进程的 `FISH_API_KEY` 环境变量读取，不写入数据库或插件配置。
 4. 配置 `father_ids` 为 `平台实例ID:用户ID`，例如 `qq-main:123456`。平台实例 ID 可参考 AstrBot `/sid` 返回的会话前缀。**留空不会自动绑定父亲**。
-5. 启用插件。初始阶段默认 `infant`；要立即体验完整聊天，可在首次建库前设置 `persona_init.initial_stage=child`。已有成长数据不被该初值重置。
+5. 启用插件。初始阶段默认 `infant`，可在首次建库前设置 `persona_init.initial_stage`。语言能力仍取决于熟练度和状态；已有成长数据不被该初值重置。
 
-数据位于 `data/plugin_data/growing_companion/companion.db`。从旧版升级会增量添加社交表与作用域字段，不删除旧记忆。旧版保存的自动绑定键不再授予父亲权限，需在后台显式配置。
+数据位于 `data/plugin_data/growing_companion/companion.db`。升级会幂等增加行为状态、实际表达历史和状态外露时间表，保留旧记忆和能力进度，`user_version=4`。更早版本同时补齐社交表与作用域字段。升级前停用插件并备份数据目录，替换代码后重载。
+
+## 表达与语音
+
+- 情绪主要体现在短长、语气、犹豫和留白；自述疲惫或想念要结合情境及实际表达历史。没有固定“每几轮做一次”的播报机制。
+- 私聊可分成 2–3 条；群聊最多 1 条、24 字，潜水无输出。沉默跳过 LLM 和 TTS，不算说话练习。
+- 同会话按顺序规划和发送。只有 `event.send` 成功返回的内容才进入助手历史和练习；发送异常停止后续分条，避免盲目重发。
+- `voice_backend=edge` 使用现成音色，需系统安装 `ffmpeg` 将 MP3 转为 AstrBot 文档要求的 WAV；它不能训练音色。
+- `voice_backend=fish` 使用云端音色 ID，直接取得 WAV；**无需本地 GPU、模型权重或 ffmpeg**。无参考录音时先选用音色库中的可用 ID，之后可上传参考录音建立自己的音色。
+- `voice_output_enabled=true` 开启语音，`voice_reply_policy=natural` 由状态决定；设 `always` 可试听私聊语音。语音失败回退文字，群聊保持文字。
 
 ## 社交行为
 
@@ -39,13 +50,13 @@ Three.js r128 和 MIT 许可证已随包提供，在线页面无需外网 CDN。
 ```bash
 python -m pip install -r requirements.txt pytest playwright
 python -m playwright install chromium
-python -m pytest -q --junitxml=docs/test-results.xml
-python tools/build_delivery.py
+python -m pytest -q --junitxml=docs/test-results-v4.xml
+python tools/build_delivery_v4.py
 ```
 
-发行包位于插件上级目录 `growing_companion_v0.3.0.zip`，另附 SHA-256。打包只选源码、文档、测试与随包库，不包含数据库、缓存或 `.git`。旧的 `growing_companion.zip` 保留。
+发行包位于插件上级目录 `growing_companion_v4.0.0.zip`，另附 SHA-256。`docs/upgrade-v4.patch` 提供相对 v0.3.0 的增量代码。包中不含数据库、密钥、用户录音或缓存；原第三版压缩包保留。
 
-本机已执行离线引擎、AstrBot API 桩、aiohttp HTTP 及真实 Three.js/Chromium WebGL 测试。没有真实平台账号与真实模型的端到端测试结果。
+已执行离线引擎、AstrBot API 桩、aiohttp HTTP 及真实 Three.js/Chromium WebGL 测试。云端接口用本地 HTTP 服务验证；Edge TTS/ffmpeg 用替身验证转换链路。没有真实 API Key、录音和平台账号，未进行云端克隆、真实发声或跨平台端到端实测。
 
 当前学习与社交判断是规则型 MVP；向量后端尚未启用。上下文采用 UTF-8 字节保守上界和消息封装余量，强制 3000–5000 的输入预算，并非所有供应商的精确 tokenizer 计数。高并发群聊尚需单写者队列和批量提交；主动冒泡由消息到达驱动，安静的群里不会定时广播。
 

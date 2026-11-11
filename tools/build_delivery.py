@@ -62,4 +62,6 @@ def build() -> None:
 
 
 if __name__ == '__main__':
+    # 保留旧构建器代码供历史参考；当前入口统一生成 4.0，避免覆盖旧版发行包。
+    from build_delivery_v4 import build
     build()

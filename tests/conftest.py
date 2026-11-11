@@ -49,7 +49,10 @@ class Env:
     async def say(self, text, user="dad", gap=60, **kw):
         self.advance(gap)
         kw.setdefault("spawn_reflection", False)
-        return await self.engine.handle_message(user, text, now=self.t, **kw)
+        reply = await self.engine.handle_message(user, text, now=self.t, **kw)
+        # Env.say 模拟平台成功投递；测试发送失败时直接调用 handle_message/complete_reply。
+        await self.engine.complete_reply(reply, reply.parts if not reply.silent else [])
+        return reply
 
 
 def fingerprint(db_path: str) -> str:

@@ -60,6 +60,7 @@ def test_passive_adapter_does_not_reply_or_stop_other_plugins(tmp_path, monkeypa
         observer = GroupEvent(text='有人提到了“新词语”，我们还不知道是什么意思。')
         assert [r async for r in plugin.on_message(observer)] == []
         assert not observer.sent and not observer.stopped and plugin.context.calls == 0
+        assert not observer.call_llm  # 禁止宿主默认 LLM 抢答；其他插件仍可继续观察。
         called = GroupEvent(text='你怎么看这个词？', directed=True)
         assert [r async for r in plugin.on_message(called)] == []
         assert len(called.sent) == 1 and called.stopped and plugin.context.calls == 1
@@ -92,7 +93,10 @@ def test_yield_replies_reach_send_stage_before_stopping_event(tmp_path, monkeypa
             async for result in plugin.on_message(ev):
                 assert not ev.stopped and not result.stopped, '结果被提前停止，AstrBot 会跳过发送阶段'
                 sent.append(result.text)
-            assert sent and ev.stopped
+            if text.startswith('/'):
+                assert sent and not ev.sent and ev.stopped
+            else:
+                assert not sent and ev.sent and ev.stopped  # 4.0 普通回复直接 await send，按回执记录。
         await plugin.terminate()
     run(go())
 

@@ -72,6 +72,12 @@ def render_status(ro: ReadOnlyDB, clock: Clock, cfg: dict[str, Any]) -> str:
     if u:
         lines.append(f"\n最近一次上下文保守估算：{u['total']}/{u['budget']} token"
                      f"（固定{u['fixed']}·状态{u['state']}·检索{u['retrieval']}·对话{u['dialog']}）")
+    behavior = ro.query_one('SELECT * FROM behavior_state ORDER BY updated_at DESC LIMIT 1') if _has(ro, 'behavior_state') else None
+    if behavior:
+        lines += [f"\n最近意图：{behavior['intent']}（置信度 {behavior['intent_confidence']:.2f}）",
+                  f"表达预算 {behavior['expression_budget']:.2f}｜状态外露 {behavior['show_state_level']:.2f}",
+                  f"形态 {behavior['reply_mode']}｜分条 {behavior['split_count']}｜延迟 {behavior['delay_seconds']:.1f}s",
+                  f"候选人格漂移分 {behavior['persona_drift_score']:.2f}｜中断 {behavior['truncate_style']}"]
     return "\n".join(lines)
 
 

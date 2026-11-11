@@ -30,7 +30,8 @@ try:
     from .core.life_tick import LifeTick
     from .core.llm import AstrBotLLM
     from .core import readonly_views as views
-    from .core.speech import AstrBotSTT, AstrBotTTS
+    from .core.speech import AstrBotSTT, build_tts
+    from .core.expression import ReplySender, SessionGate
 except ImportError:                    # 个别加载方式不是包导入时的兜底
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from core.brainmap.export import export_graph          # type: ignore[no-redef]
@@ -40,10 +41,11 @@ except ImportError:                    # 个别加载方式不是包导入时的
     from core.life_tick import LifeTick                     # type: ignore[no-redef]
     from core.llm import AstrBotLLM                         # type: ignore[no-redef]
     from core import readonly_views as views                # type: ignore[no-redef]
-    from core.speech import AstrBotSTT, AstrBotTTS          # type: ignore[no-redef]
+    from core.speech import AstrBotSTT, build_tts          # type: ignore[no-redef]
+    from core.expression import ReplySender, SessionGate
 
 PLUGIN_NAME = "growing_companion"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "4.0.0"
 DENY = "这个只有爸爸才能看哦～"
 TAG = "[growing_companion]"          # 日志前缀：在 AstrBot 日志里搜它，就能看出插件有没有在工作
 PREFIX_CHARS = "/!！／"
@@ -107,7 +109,7 @@ def _bridge_logging() -> None:
 logger.info(f"{TAG} 模块导入成功 v{PLUGIN_VERSION}")
 
 
-@register(PLUGIN_NAME, "Companion Contributors", "拟人化成长陪伴第三版：群聊观察、成长与社交边界", PLUGIN_VERSION)
+@register(PLUGIN_NAME, "Companion Contributors", "拟人化成长陪伴 4.0：表达节制、自然形态与云端语音", PLUGIN_VERSION)
 class GrowingCompanion(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -120,7 +122,8 @@ class GrowingCompanion(Star):
                     f"阶段={self.engine.growth.state()['stage']}｜"
                     f"父亲ID={'已配置%d个' % len(fathers) if fathers else '未配置（不会自动认领父亲，请在后台配置平台实例ID:用户ID）'}")
         self.stt = AstrBotSTT(context)
-        self.tts = AstrBotTTS(context, self.data_dir / "tts")
+        self.tts = build_tts(context, self.config, self.data_dir / 'tts')
+        self.sender, self.gate = ReplySender(), SessionGate()
         self.brain = BrainMapServer(
             str(self.data_dir / "companion.db"), host="0.0.0.0",
             port=int(self.config.get("brainmap_port", 5208)), access_key=self._brain_key(),
@@ -247,64 +250,47 @@ class GrowingCompanion(Star):
 
         sender = self._actor(event)
         is_group = not self._is_private(event)
-        # 群聊/非父亲私聊进入社交链路。潜水无 yield、无 event.send。
-        if is_group or not self.engine.is_father(sender):
-            llm = AstrBotLLM(self.context, event.unified_msg_origin, str(self.config.get('light_provider_id', '')))
-            result = None
-            delivered = False
+        scope = event.unified_msg_origin
+        # 潜水仍允许其他插件观察，但禁止宿主默认 LLM 替她冒泡。
+        event.should_call_llm(False)
+        # 同会话整个链路串行，第二轮规划能看到上一轮实际发送过的表达。
+        async with self.gate.hold(scope):
+            llm = AstrBotLLM(self.context, scope, str(self.config.get('light_provider_id', '')))
+            reply = None
+            delivered: list[str] = []
             try:
-                result = await self.engine.handle_message(sender, text, llm=llm,
-                    scope_id=event.unified_msg_origin, is_group=is_group, directed=wake,
+                reply = await self.engine.handle_message(sender, text, is_voice=is_voice, llm=llm,
+                    scope_id=scope, is_group=is_group, directed=wake,
                     message_id=str(getattr(getattr(event, 'message_obj', None), 'message_id', '') or ''))
-                if result.silent:
+                if reply.silent:
                     if wake:
-                        event.stop_event()  # 被叫到却受 CD 限制：阻止默认 LLM 绕过限流。
+                        event.stop_event()  # 防止默认 LLM 替沉默/冷却中的她回答。
                     return
+                # 直接 await event.send，不使用先 stop 再 yield（会被框架丢弃）。
                 event.stop_event()
-                await event.send(event.chain_result([Comp.Plain(result.text)]))
-                delivered = True
+                p = reply.plan
+                logger.info(f"{TAG} 已接管回复｜语言档={p.language_tier}｜意图={p.intent}｜"
+                            f"形态={p.reply_mode}｜分条={len(reply.parts)}｜漂移分={p.persona_drift_score:.2f}")
+                if self.engine.is_father(sender) and not is_group:
+                    self.engine.db.kv_set('father_umo', scope)
+                if self.config.get('voice_reply_policy', 'natural') == 'always' and not is_group:
+                    reply.prefer_voice = True
+
+                async def send_text(content: str):
+                    return await event.send(event.plain_result(content))
+
+                async def send_voice(path: str):
+                    return await event.send(event.chain_result([Comp.Record(file=path, url=path)]))
+
+                await self.sender.send(reply, send_text=send_text, send_voice=send_voice, delivered=delivered,
+                    tts=self.tts, voice_enabled=bool(self.config.get('voice_output_enabled', False)))
             except Exception:
-                logger.exception('社交链路失败')
+                logger.exception('陪伴链路失败')
                 if wake:
                     event.stop_event()
             finally:
-                if result and result.speech_token:
-                    await self.engine.social.complete(result, delivered)
-            return
-        llm = AstrBotLLM(self.context, event.unified_msg_origin, str(self.config.get("light_provider_id", "")))
-        try:
-            reply = await self.engine.handle_message(sender, text, is_voice=is_voice, llm=llm)
-        except Exception:
-            logger.exception("陪伴引擎出错")
-            event.stop_event()
-            return
-        is_father = self.engine.is_father(sender)
-        if is_father:                           # 记下会话地址，第二版“主动想你”时用 context.send_message 发回
-            self.engine.db.kv_set("father_umo", event.unified_msg_origin)
-        # 已接管回复：只记状态，不记聊天内容（隐私）。看到这一行，说明这条回复是插件发的，不是 AstrBot 默认人格
-        p = reply.plan
-        logger.info(f"{TAG} 已接管回复｜{'爸爸' if is_father else '非爸爸(陌生人模式)'}｜"
-                    f"阶段={self.engine.growth.state()['stage']}｜语言档={p.language_tier}｜模式={p.mode}｜"
-                    f"回复{len(reply.text)}字(上限{p.max_chars})｜延迟{reply.delay_s:.1f}s｜"
-                    f"{'沉默' if reply.silent else '语音倾向' if reply.prefer_voice else '文字'}｜"
-                    f"上下文保守估算{reply.usage.total}/{reply.usage.budget}token")
-
-        if reply.delay_s > 0:                   # 不是永远秒回
-            await asyncio.sleep(reply.delay_s)
-        if reply.silent:
-            event.stop_event()
-            return
-        result = None
-        if (self.config.get("voice_output_enabled", False) and reply.prefer_voice and not reply.silent):
-            path = await self.tts.synthesize(reply.text)
-            if path:
-                result = event.chain_result([Comp.Record(file=path, url=path)])
-        if result is None:
-            result = event.plain_result(reply.text)
-        # v4.29.4 调度器在 yield 后先检查停止标志，再进入发送阶段。
-        # 必须先 yield 普通结果，恢复执行后再停止，不能 yield result.stop_event()。
-        yield result
-        event.stop_event()
+                if reply and reply.speech_token:
+                    await self.engine.complete_reply(reply, delivered)
 
     # ------------------------------------------------------------------ 只读查看命令
     def _allowed(self, event: AstrMessageEvent) -> bool:

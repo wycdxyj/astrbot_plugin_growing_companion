@@ -1,9 +1,7 @@
 """CompanionEngine：把各模块串成对话主链路（不依赖 AstrBot，便于测试）。
 
-对话流程：
-接收消息 → 补 tick → 记忆主动浮现与检索(top-k) → 更新情绪与身体状态 → 认知判断 →
-行为决策(人格/关系/时间感/注意力) → 上下文预算管理器分层装配 → 生成回复 →
-后处理(沉浸感/语言上限) → 成长练习与里程碑 → 记忆写入 → 异步由她自主判断是否复盘。
+对话流程：接收 → 记忆/情绪 → 意图判断 → 认知 → 表达规划与节制 → 分层上下文 →
+生成与人格校验 → 形态控制 → 平台发送 → 确认实际内容 → 练习/记忆 → 自主复盘。
 """
 from __future__ import annotations
 
@@ -11,9 +9,14 @@ import asyncio
 import logging
 import random
 import re
-from typing import Any
+import secrets
+from dataclasses import replace
+from typing import Any, Callable
 
 from .budget import ContextBudgetManager, UsageMonitor
+from .behavior_state import BehaviorStore
+from .consistency import PersonaConsistency
+from .expression import shape_reply
 from .clock import Clock
 from .cognition import CognitionEngine
 from .db import Database, ReadOnlyDB
@@ -23,7 +26,7 @@ from .inner_life import InnerLife
 from .life_tick import LifeTick
 from .llm import LLMAdapter
 from .memory import MemorySystem, similarity
-from .models import (EMOTION_CN, EmotionSnapshot, EngineReply, STAGE_CN, BehaviorPlan, Percept, clamp)
+from .models import (EMOTION_CN, Appraisal, AssembledContext, EmotionSnapshot, EngineReply, STAGE_CN, BehaviorPlan, Percept, clamp)
 from .perception import bigrams, perceive
 from .persona import AttentionModel, BodyModel, PersonaStore
 from .planner import BehaviorPlanner, PlanContext
@@ -37,7 +40,7 @@ log = logging.getLogger("growing_companion")
 
 DEFAULTS: dict[str, Any] = {
     "growth_speed": 1.0, "emotion_decay_speed": 1.0, "memory_decay_speed": 1.0,
-    "token_budget_total": 4000, "token_budget_fixed": 1200, "token_budget_state": 400,
+    "token_budget_total": 4000, "token_budget_fixed": 1200, "token_budget_state": 900,
     "token_budget_retrieval": 1200, "token_budget_dialog": 1600,
     "memory_topk": 6, "dialog_window_turns": 12, "timezone_offset_hours": 8.0,
     "father_ids": [], "tick_interval_seconds": 480, "human_like_delay": True, "max_reply_delay_seconds": 8,
@@ -80,6 +83,7 @@ class CompanionEngine:
         pi.update(cfg.get("persona_init") or {})
         cfg["persona_init"] = pi
         cfg['token_budget_total'] = max(3000, min(5000, int(cfg['token_budget_total'])))
+        cfg['max_reply_delay_seconds'] = max(1, min(30, float(cfg['max_reply_delay_seconds'])))
         for key, low, high in [('social_cooldown_seconds', 10, 86400),
                                ('social_global_cooldown_seconds', 3, 86400),
                                ('social_ack_timeout_seconds', 10, 86400),
@@ -103,9 +107,12 @@ class CompanionEngine:
         self.inner = InnerLife(self.db)
         self.reflection = ReflectionEngine(self.db, self.memory, self.growth, self.cognition, self.inner, self.rng)
         self.planner = BehaviorPlanner()
+        self.behavior = BehaviorStore(self.db)
+        self.consistency = PersonaConsistency()
+        self._pending: dict[str, Callable[[list[str]], None]] = {}
         self.budget = ContextBudgetManager(
             total=int(cfg["token_budget_total"]), fixed_max=int(cfg["token_budget_fixed"]),
-            state_max=int(cfg["token_budget_state"]), retrieval_max=int(cfg["token_budget_retrieval"]),
+            state_max=max(800, int(cfg["token_budget_state"])), retrieval_max=int(cfg["token_budget_retrieval"]),
             dialog_max=int(cfg["token_budget_dialog"]), window_turns=int(cfg["dialog_window_turns"]),
             topk=int(cfg["memory_topk"]))
         self.monitor = UsageMonitor(self.db)
@@ -198,9 +205,19 @@ class CompanionEngine:
             deltas[e] += dv
         est = self.emotion.apply(est, deltas, traits["sensitivity"], attach, now)
 
-        # ---- 认知判断 ----
+        # ---- 先产生自己的意图，再理解输入并校正表达方向 ----
         snap_mid = EmotionEngine.snapshot(est, traits, attach)
         profile = self.growth.profile(body, snap_mid)
+        history = self.behavior.history('legacy:father', str(user_id), now)
+        preferences = self.db.query('SELECT subject,strength FROM preferences WHERE valence>0 ORDER BY strength DESC LIMIT 10')
+        ctx = PlanContext(
+            percept=percept, appraisal=Appraisal(), snap=snap_mid, body=body, attention=att, was_away=was_away,
+            relation=rel, traits=traits, style=style, profile=profile, time=tsense, recalled=recalled,
+            spontaneous=spont, reunion=reunion, pending_reflection=self.reflection.pending_share(),
+            pending_dream=self.inner.unshared_dream(), open_promises=self.inner.open_promises(),
+            is_father=is_father, history=history,
+            interest=max((r['strength'] for r in preferences if r['subject'] in text), default=0.0))
+        intent = self.planner.infer_intent(ctx, self.rng)
         ap = self.cognition.appraise(percept, recalled, profile, snap_mid, self.rng)
         if ap.novelty > 0:       # 新鲜事勾起好奇
             est = self.emotion.apply(est, {"curiosity": 0.10 * ap.novelty}, traits["sensitivity"], attach, now)
@@ -220,13 +237,8 @@ class CompanionEngine:
         profile = self.growth.profile(body, snap)
 
         # ---- 行为决策 ----
-        ctx = PlanContext(
-            percept=percept, appraisal=ap, snap=snap, body=body, attention=att, was_away=was_away, relation=rel,
-            traits=traits, style=style, profile=profile, time=tsense, recalled=recalled, spontaneous=spont,
-            reunion=reunion, pending_reflection=self.reflection.pending_share() if is_father else None,
-            pending_dream=self.inner.unshared_dream() if is_father else None,
-            open_promises=self.inner.open_promises(), is_father=is_father)
-        plan = self.planner.plan(ctx, self.rng)
+        ctx.appraisal, ctx.snap, ctx.profile = ap, snap, profile
+        plan = self.planner.plan_expression(ctx, intent, self.rng)
 
         # ---- 上下文预算管理器：分层装配 ----
         dialog = self._recent_dialog(str(user_id))
@@ -238,55 +250,107 @@ class CompanionEngine:
         r_segs = build_retrieval_segments(recalled + ([spont] if spont else []), beliefs, last_ref, ms_text)
         guidance = self.social.guidance(text, now) if is_father else None
         state_segs = build_state_segments(ctx, plan)
-        if guidance and plan.language_tier >= 2 and snap.values['curiosity'] > 0.2 and not plan.safety:
+        if guidance and plan.intent in {'share', 'question'} and plan.language_tier >= 2 and not plan.safety:
             state_segs.append((f'今天在群里想到“{guidance["topic"]}”，想问爸爸怎么看；不转述群友身份或私事。', 12))
-        asm = self.budget.assemble(
+        def assemble(extra: list[tuple[str, float]]) -> AssembledContext:
+            return self.budget.assemble(
             fixed_key=fixed_cache_key(style, traits, stage, plan.language_tier),
             fixed_full=lambda: build_fixed_layer(style, traits, stage, plan.language_tier),
             fixed_short=lambda: build_fixed_short(style, traits, stage, plan.language_tier),
-            state_segs=state_segs, retrieval_segs=r_segs, dialog=dialog,
+            state_segs=extra + state_segs, retrieval_segs=r_segs, dialog=dialog,
             user_text=percept.text)
-        self.monitor.record(asm.usage, now)
-
-        # ---- 生成回复 ----
-        if plan.silent:
-            reply = "……"
-        else:
-            raw = ""
-            if llm is not None:
-                try:
-                    raw = await asyncio.wait_for(llm.chat(prompt=asm.prompt, system_prompt=asm.system_prompt,
-                                         contexts=asm.contexts, purpose="reply"), self.cfg['llm_timeout_seconds'])
-                except Exception as e:      # 供应商出错不能让她“死机”
-                    log.warning("LLM 调用失败，使用兜底回复: %s", e)
-            reply = self._postprocess(raw, plan, ap.sincere_identity_question, snap)
+        reply, asm = await self.generate(assemble, plan, ap, snap, llm, history, now)
+        parts = shape_reply(reply, plan, max_delay=float(self.cfg['max_reply_delay_seconds']),
+                            delay_enabled=bool(self.cfg['human_like_delay']))
+        reply = '\n'.join(parts)
+        behavior_id = self.behavior.record('legacy:father', str(user_id), plan, now,
+                          history['fatigue_load'] + max(0, .65 - body.energy))
 
         # ---- 回复之后：成长、状态、记忆、复盘 ----
-        events = self.growth.after_reply(reply, percept, body, snap, now) if is_father else []
-        self.handle_growth_events(events, now)
         BodyModel.spend(body, snap.arousal, len(percept.text))
         self.body_model.save(body)
         self.attention_model.save(att)
-        events_txt = self._after_reply_records(percept, reply, snap, ap, plan, rel, flags, recalled, spont,
-                                               tsense.period, now, is_father)
         self.db.execute("INSERT INTO conversation_log(ts,user_id,role,content) VALUES(?,?,?,?)",
                         (now, str(user_id), "user", percept.text))
-        self.db.execute("INSERT INTO conversation_log(ts,user_id,role,content) VALUES(?,?,?,?)",
-                        (now, str(user_id), "assistant", reply))
         self.db.execute("UPDATE time_sense SET last_contact_at=?, first_chat_at=COALESCE(first_chat_at,?), "
                         "last_gap_s=? WHERE id=1", (now, now, gap))
         if rel:
             self.relations.save(rel)
-        if not plan.silent:
-            self.social.mark_guidance_offered(guidance, reply, now)
+        token = secrets.token_hex(16)
 
-        if spawn_reflection and is_father:
-            self._spawn_reflection(now, body, snap, attach, llm, style, traits.get("openness", 0.5))
+        def after_delivery(delivered: list[str]) -> None:
+            sent = '\n'.join(delivered)
+            delivered_at = self.clock.now()
+            self.behavior.complete(behavior_id, delivered, delivered_at, expected=len(parts))
+            if sent:
+                events = self.growth.after_reply(sent, percept, body, snap, delivered_at)
+                self.handle_growth_events(events, delivered_at)
+                self.db.execute("INSERT INTO conversation_log(ts,user_id,role,content) VALUES(?,?,?,?)",
+                                (delivered_at, str(user_id), 'assistant', sent))
+                self.social.mark_guidance_offered(guidance, sent, delivered_at)
+            # 观察仍形成经历；未说出口的文本不进入记忆或练习次数。
+            actual_plan = replace(plan, share_reflection_id=None, share_dream_id=None)
+            if sent and ctx.pending_reflection and similarity(bigrams(sent), bigrams(ctx.pending_reflection['summary'])) > .15:
+                actual_plan.share_reflection_id = plan.share_reflection_id
+            if sent and ctx.pending_dream and similarity(bigrams(sent), bigrams(ctx.pending_dream['content'])) > .15:
+                actual_plan.share_dream_id = plan.share_dream_id
+            self._after_reply_records(percept, sent or '（没有发出回复）', snap, ap, actual_plan, rel,
+                                      flags, recalled, spont, tsense.period, now, is_father)
+            if rel:
+                self.relations.save(rel)
+            if spawn_reflection:
+                self._spawn_reflection(delivered_at, body, snap, attach, llm, style, traits.get('openness', .5))
 
-        delay = plan.reply_delay_s if self.cfg["human_like_delay"] else 0.0
+        self._pending[token] = after_delivery
         return EngineReply(text=reply, plan=plan, usage=asm.usage, silent=plan.silent,
-                           delay_s=min(delay, float(self.cfg["max_reply_delay_seconds"])),
-                           prefer_voice=plan.prefer_voice, events=events_txt)
+                           delay_s=plan.delay_seconds, prefer_voice=plan.prefer_voice,
+                           speech_token=token, scope_id='legacy:father', parts=parts, behavior_id=behavior_id)
+
+    async def complete_reply(self, reply: EngineReply, delivered: list[str]) -> None:
+        """发送方必须在 finally 调用；成功、失败、取消、沉默都可重复确认而不重复练习。"""
+        if reply.speech_token in self.social.pending:
+            await self.social.complete(reply, bool(delivered), delivered_parts=delivered)
+            return
+        async with self._lock:
+            callback = self._pending.pop(reply.speech_token, None)
+            if callback:
+                callback(delivered)
+
+    async def generate(self, assemble: Callable[[list[tuple[str, float]]], AssembledContext],
+                       plan: BehaviorPlan, ap: Appraisal, snap: EmotionSnapshot, llm: LLMAdapter | None,
+                       history: dict[str, Any], now: float, *, require_output: bool = False) -> tuple[str, AssembledContext]:
+        """至多一次重生成，两次都走同一个分层预算；最终还有规则节制层。"""
+        asm = assemble([])
+        self.monitor.record(asm.usage, now)
+        if plan.silent:
+            return '', asm
+        raw = ''
+        score = 0.0
+        for attempt in range(2):
+            if llm:
+                try:
+                    raw = await asyncio.wait_for(llm.chat(prompt=asm.prompt, system_prompt=asm.system_prompt,
+                        contexts=asm.contexts, purpose='reply' if attempt == 0 else 'persona_repair'),
+                        self.cfg['llm_timeout_seconds'])
+                except Exception as exc:
+                    log.warning('LLM 调用失败：%s', type(exc).__name__)
+                    if require_output and not raw:
+                        raise RuntimeError('社交模型不可用') from exc
+            if require_output and not raw:
+                raise RuntimeError('模型没有返回文字')
+            check = self.consistency.check(raw, plan, history)
+            score = max(score, check.score)
+            if check.score < .4 or attempt or not llm or ap.sincere_identity_question:
+                break
+            # 不重放漂移候选。只传校验原因，重新回应原始输入，避免复制错误句式。
+            asm = assemble([('重写要求：' + '、'.join(check.reasons) + '。用日常口语回应，不汇报内部状态。', 31)])
+            self.monitor.record(asm.usage, now)
+        plan.persona_drift_score, plan.last_consistency_check = score, now
+        if not ap.sincere_identity_question:
+            raw = self.consistency.clean(raw, plan, history)
+            if raw in history.get('recent_texts', [])[:1] and len(raw) > 8:
+                raw = ''
+        return self._postprocess(raw, plan, ap.sincere_identity_question, snap), asm
 
     # ------------------------------------------------------------------ 回复后处理
     def _postprocess(self, raw: str, plan: BehaviorPlan, identity_q: bool, snap: EmotionSnapshot) -> str:
@@ -307,9 +371,9 @@ class CompanionEngine:
         if plan.mode == "sulk":
             return r.choice(["哼。", "不理你…", "哼～"]) if plan.language_tier >= 1 else "哼。"
         if plan.mode == "sleepy":
-            return r.choice(["嗯…困…", "唔…", "呼……"])
+            return r.choice(["嗯…", "唔…", "嗯。"])
         tiers = {0: ["啊…", "爸…", "嗯嗯", "呀～"], 1: ["爸爸！", "要抱抱", "嗯嗯好", "玩！"],
-                 2: ["爸爸你来啦～", "我在呢", "我想你了", "嗯，好呀"]}
+                 2: ["嗯。", "我在呢", "好呀", "唔…"]}
         return r.choice(tiers.get(plan.language_tier, ["嗯，我在听呢，爸爸。", "我在呀。"]))
 
     # ------------------------------------------------------------------ 记录

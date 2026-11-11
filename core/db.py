@@ -214,6 +214,7 @@ class Database:
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.executescript(SCHEMA)
             self._migrate_v3()
+            self._migrate_v4()
             self.conn.commit()
 
     def _migrate_v3(self) -> None:
@@ -233,7 +234,14 @@ class Database:
         self.conn.executescript(SOCIAL_SCHEMA)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_scope ON memories(scope_id,id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dialog_scope ON conversation_log(scope_id,id)")
-        self.conn.execute("PRAGMA user_version=3")
+
+    def _migrate_v4(self) -> None:
+        """只增加行为表；旧记忆、关系、熟练度原样保留。"""
+        from .behavior_state import BEHAVIOR_SCHEMA
+        self.conn.executescript(BEHAVIOR_SCHEMA)
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 4:
+            self.conn.execute("PRAGMA user_version=4")
 
     @contextmanager
     def transaction(self):

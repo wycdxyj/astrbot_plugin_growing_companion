@@ -1,2 +1,3 @@
 # AstrBot 4.29.4 自带 aiohttp；独立运行核心测试时也可安装。
 aiohttp>=3.11.18,<4
+edge-tts>=7,<8

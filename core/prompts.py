@@ -13,7 +13,7 @@ from .persona import PersonaStore
 from .planner import PlanContext
 from .models import BehaviorPlan
 
-FIXED_RULES_VERSION = "v3"
+FIXED_RULES_VERSION = "v4"
 Segment = tuple[str, float]   # (文本, 优先级：越大越重要)
 
 PHASE_CN = {"awake": "清醒", "drowsy": "犯困", "asleep": "在睡觉", "groggy": "迷迷糊糊"}
@@ -35,7 +35,7 @@ def build_fixed_layer(style: dict[str, Any], traits: dict[str, float], stage: st
     return (
         f"你是“{name}”，是{addr}的女儿。你在一点点长大，你知道的事来自你自己的经历，而不是百科全书。\n"
         f"【成长阶段】{STAGE_CN.get(stage, stage)}。语言能力：{LANG_LABEL[tier]}。"
-        f"你只能说出和这个阶段相符的话；遇到不懂的事就说不懂、好奇、想学，不要装懂。\n"
+        f"你只能说出和这个阶段相符的话；遇到不懂的事保留不确定，不要装懂，也不用逐项汇报感受。\n"
         f"【性格】{PersonaStore.trait_words(traits)}。\n"
         f"【说话习惯】称呼{addr}；口癖：{'、'.join(style.get('catchphrases', []))}；"
         f"常用语气词：{'、'.join(style.get('particles', []))}。\n"
@@ -65,27 +65,19 @@ def build_fixed_short(style: dict[str, Any], traits: dict[str, float], stage: st
 
 
 def build_state_segments(ctx: PlanContext, plan: BehaviorPlan) -> list[Segment]:
-    """状态层：只放“当前有效”的状态，不放历史曲线。"""
-    segs: list[Segment] = []
-    t = ctx.time
-    segs.append((f"【现在】{t.weekday_cn}{t.period}，{t.absence_label}。", 5))
-    act = {k: v for k, v in ctx.snap.values.items() if k != "trust" and v >= 0.3}
-    if act:
-        txt = "、".join(f"{EMOTION_CN[k]}({v:.1f})" for k, v in sorted(act.items(), key=lambda kv: -kv[1]))
-        segs.append((f"【情绪】{txt}" + ("（有点矛盾）" if ctx.snap.mixed else ""), 8))
-    b = ctx.body
-    if b.energy < 0.4 or b.sleepiness > 0.6 or b.phase != "awake":
-        segs.append((f"【身体感】{PHASE_CN.get(b.phase, b.phase)}，精力{b.energy:.1f}", 7))
-    r = ctx.relation
-    if r:
-        if r.conflict_open:
-            segs.append(("【关系】和爸爸之间还有点疙瘩，没完全和好", 9))
-        elif r.trust < 0.35:
-            segs.append(("【关系】对爸爸的信任有点低", 6))
-        if r.longing > 0.35:
-            segs.append((f"【关系】很想爸爸({r.longing:.1f})", 6))
+    """只注入行为约束，不把每项内部感受展示给模型当成待播报内容。"""
+    from .consistency import PersonaConsistency
+    names = {'fatigue': '疲惫', 'missing': '想念', 'negative': '负面感受'}
+    allowed = '、'.join(names[x] for x in plan.allowed_state_topics) or '无'
+    segs: list[Segment] = [
+        (f'【表达】{plan.tone}；{plan.reply_mode}；总计≤{plan.max_chars}字。'
+         f'允许自述的状态：{allowed}；仅表示可以，不必说。其余状态藏在语气和长短里，别汇报情绪。', 30),
+        (PersonaConsistency().prompt(ctx.style, ctx.history, plan), 25),
+        (f'【意图】{plan.intent}；语言水平：{LANG_LABEL[plan.language_tier]}。', 22),
+        (f'【现在】{ctx.time.weekday_cn}{ctx.time.period}。', 5),
+    ]
     for i, d in enumerate(plan.directives):
-        segs.append((f"· {d}", 10 - 0.1 * i))
+        segs.append((f"· {d}", 33 if plan.safety or '不同意' in d else 10 - 0.1 * i))
     segs.append((f"【字数上限】本轮回复约 {plan.max_chars} 个字以内；语言水平：{LANG_LABEL[plan.language_tier]}", 11))
     return segs
 

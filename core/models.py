@@ -199,6 +199,14 @@ class GrowthProfile:
 
 
 @dataclass
+class IntentDecision:
+    """她自己的意图，与 Appraisal.intent（对输入的理解）分开保存。"""
+    intent: str = "respond"
+    confidence: float = 0.5
+    reason: str = "愿意接着聊"
+
+
+@dataclass
 class BehaviorPlan:
     mode: str = "normal"                 # normal/sleepy/sulk/away/clingy/regressed/safety/stranger/cold
     max_chars: int = 80
@@ -214,6 +222,19 @@ class BehaviorPlan:
     share_dream_id: int | None = None
     stretch_attempt: bool = False
     prefer_voice: bool = False
+    intent: str = "respond"
+    intent_confidence: float = 0.5
+    expression_budget: float = 0.5
+    show_state_level: float = 0.0
+    reply_mode: str = "single"           # single / multi / silence / short
+    delay_seconds: float = 0.0
+    split_count: int = 1
+    truncate_style: str = "none"         # none / trail_off / withdraw
+    persona_drift_score: float = 0.0
+    last_consistency_check: float | None = None
+    tone: str = "平淡"
+    allowed_state_topics: list[str] = field(default_factory=list)
+    is_group: bool = False
 
 
 @dataclass
@@ -257,6 +278,8 @@ class EngineReply:
     events: list[str] = field(default_factory=list)  # 里程碑等事件描述（调试用）
     speech_token: str = ''  # 持久化发言租约；发送成功后才确认。
     scope_id: str = ''
+    parts: list[str] = field(default_factory=list)
+    behavior_id: int = 0
 
 
 @dataclass(frozen=True)

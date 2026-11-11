@@ -197,7 +197,7 @@ def test_upgrade_v1_schema_preserves_original_content(tmp_path):
     try:
         assert db.query_one('SELECT * FROM memories')['content'] == '旧版原文'
         assert db.query_one('SELECT * FROM memories')['scope_id'] == 'legacy:father'
-        assert db.query_one('PRAGMA user_version')['user_version'] == 3
+        assert db.query_one('PRAGMA user_version')['user_version'] == 4
         db2 = Database(path)
         db2.close()
     finally:

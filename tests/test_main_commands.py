@@ -47,6 +47,8 @@ class FakeEvent:
     def __init__(self, uid):
         self.uid, self.message_str, self.unified_msg_origin = uid, "", "test:private:1"
         self.stopped = False
+        self.sent = []
+        self.call_llm = True
 
     def get_sender_id(self): return self.uid
     def plain_result(self, t): return t
@@ -54,6 +56,8 @@ class FakeEvent:
     def stop_event(self): self.stopped = True
     def is_private_chat(self): return True
     def get_messages(self): return []
+    async def send(self, message): self.sent.append(message)
+    def should_call_llm(self, value): self.call_llm = value
 
 
 def test_main_registers_and_readonly_commands(tmp_path, monkeypatch, caplog):
@@ -73,7 +77,7 @@ def test_main_registers_and_readonly_commands(tmp_path, monkeypatch, caplog):
         ev = FakeEvent("dad")
         ev.message_str = "爸爸来啦，你真乖！"
         out = await drain(plugin.on_message(ev))               # 没有 LLM 供应商 → 走兜底回复，不崩
-        assert out and ev.stopped
+        assert out == [] and ev.sent and ev.stopped
         logs = caplog.text
         assert "[growing_companion] 模块导入成功" in logs and "[growing_companion] 初始化完成" in logs   # 启动日志
         assert "[growing_companion] 已接管回复" in logs and "语言档=" in logs                            # 接管日志
@@ -144,7 +148,7 @@ def test_commands_work_with_or_without_prefix_and_never_double_reply(tmp_path, m
         # 普通聊天里提到词 / AstrBot 自带指令：不当成命令
         ev = FakeEvent("dad"); ev.message_str = "她状态怎么样呀"
         out = await drain(plugin.on_message(ev))
-        assert out and "现在的状态" not in out[0]
+        assert out == [] and ev.sent and "现在的状态" not in ev.sent[0]
         ev = FakeEvent("dad"); ev.message_str = "/help"
         assert await drain(plugin.on_message(ev)) == [] and not ev.stopped      # 放行给 AstrBot 自带指令
         await plugin.terminate()
